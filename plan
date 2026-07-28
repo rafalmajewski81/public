@@ -1,0 +1,21 @@
+1.Stworzenie obrazu Dockera z wbudowaną aplikacją webhook, czyli przygotowanie kodu aplikacji przygotowanie Dockerfile.
+2.Uzyskanie certyfikatu potrzebnego do działania webhooka oraz przygotowanie pary cert + key do HTTPS. (certyfikat bedzie zapisany w secret więc można dalej kontynułować punkt 3 czekając na certyfikat)
+3.Przygotowanie manifestów: i uruchomienia aplikacji webhook:namespace, w którym ma działać webhook
+ - Deployment
+ - Service
+ - MutatingWebhookConfiguration
+ - Secret z certyfikatem i kluczem
+3.Przekazanie administratorom klastra openshift, zasobów wymagających ich uprawnień i wdrożenie ich po stronie OpenShift.
+  - mutating-webhook-configuration.yaml
+-  Wdrożenie webhooka w trybie Ignore, żeby na start nie blokował tworzenia Podów.
+4.Testy końcowe:
+  - utworzenie testowego poda ręcznie,
+  - utworzenie Poda przez operatora Apigee
+  - sprawdzenie, czy webhook mutuje tylko Pody w apigee
+  - sprawdzenie logów i zachowania przy restarcie Poda
+
+
+
+
+  Wersja python 3.12 
+  --- obrazy
