@@ -1,1 +1,394 @@
+APIGEE HYBRID 1.16 – CERTIFICATE MANAGEMENT PROCESS
+===================================================
 
+1. Cel dokumentu
+----------------
+Celem dokumentu jest opisanie procesu zarządzania certyfikatami wykorzystywanymi w Apigee Hybrid 1.16, ze szczególnym uwzględnieniem sposobu ich utworzenia, wykorzystania oraz odnowienia/rotacji.
+
+W środowisku rozróżniamy dwa niezależne procesy:
+
+1. Certyfikaty wewnętrzne (EAST-WEST) – wykorzystywane do zabezpieczenia komunikacji pomiędzy komponentami działającymi wewnątrz klastra. Ich lifecycle jest związany z cert-managerem.
+2. Certyfikaty ingress (NORTH-SOUTH) – wykorzystywane do terminacji ruchu HTTPS przychodzącego do Apigee przez Apigee Ingress Gateway. Certyfikat jest dostarczany z zewnętrznego procesu wystawiania certyfikatów i udostępniany Apigee jako Kubernetes Secret.
+
+Procesy należy traktować niezależnie.
+
+
+2. Certyfikaty EAST-WEST
+------------------------
+
+2.1. Przeznaczenie
+
+Certyfikaty EAST-WEST zabezpieczają komunikację TLS pomiędzy komponentami Apigee działającymi wewnątrz klastra OpenShift.
+
+Uproszczony przepływ:
+
+Apigee Pod / Component
+        |
+        | TLS
+        v
+Apigee Pod / Component
+
+W tym obszarze Apigee Hybrid wykorzystuje cert-manager do obsługi certyfikatów wymaganych przez platformę.
+
+
+2.2. Utworzenie certyfikatów
+
+W Kubernetes/cert-manager deklaracją opisującą wymagany certyfikat jest zasób Certificate. Certificate wskazuje Issuer lub ClusterIssuer odpowiedzialny za wystawienie certyfikatu oraz Secret, w którym mają zostać zapisane wygenerowane dane.
+
+Uproszczony proces:
+
+Certificate
+    |
+    v
+Issuer / ClusterIssuer
+    |
+    v
+cert-manager
+    |
+    | wystawienie certyfikatu
+    v
+Kubernetes Secret
+    |
+    +-- certificate
+    +-- private key
+    |
+    v
+Apigee components
+
+cert-manager obserwuje zasoby Certificate i odpowiada za wystawienie certyfikatu oraz zapisanie go wraz z kluczem prywatnym w odpowiednim Kubernetes Secret.
+
+
+2.3. CA Apigee – apigee-ca
+
+Istotnym elementem infrastruktury certyfikatów Apigee jest certyfikat CA o nazwie apigee-ca.
+
+Dla Apigee Hybrid 1.16 Google pokazuje konfigurację podobną do:
+
+spec:
+  commonName: apigee-hybrid
+  duration: 87600h
+  isCA: true
+  issuerRef:
+    kind: ClusterIssuer
+    name: apigee-root-certificate-issuer
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Never
+    size: 256
+  secretName: apigee-ca
+
+Certyfikat CA jest zapisywany w Secret apigee-ca.
+
+
+2.4. Automatyczne odnowienie certyfikatów
+
+cert-manager automatycznie monitoruje okres ważności zarządzanych przez siebie certyfikatów.
+
+Dla Certificate wyliczany jest czas odnowienia (RenewalTime). Jeżeli renewBefore ani renewBeforePercentage nie zostały jawnie skonfigurowane, cert-manager standardowo wylicza próbę odnowienia po około 2/3 czasu ważności wystawionego certyfikatu.
+
+Proces:
+
+aktywny certyfikat
+       |
+       v
+cert-manager monitoruje ważność
+       |
+       v
+osiągnięcie RenewalTime
+       |
+       v
+CertificateRequest / wystawienie nowego certyfikatu
+       |
+       v
+aktualizacja odpowiedniego Secret
+       |
+       v
+nowy certyfikat jest dostępny dla komponentu
+
+Nie jest zatem wymagane ręczne pilnowanie daty wygaśnięcia każdego standardowego certyfikatu zarządzanego przez cert-manager, o ile mechanizm wystawiania działa poprawnie.
+
+
+2.5. Rotacja klucza prywatnego – ważne dla Apigee Hybrid 1.16
+
+Należy rozróżnić:
+
+- odnowienie certyfikatu,
+- rotację klucza prywatnego.
+
+Parametr Certificate.Spec.PrivateKey.rotationPolicy określa, czy podczas ponownego wystawienia certyfikatu cert-manager ma zachować istniejący private key, czy wygenerować nowy.
+
+rotationPolicy: Never
+- certyfikat może zostać ponownie wystawiony,
+- istniejący private key jest ponownie używany.
+
+rotationPolicy: Always
+- podczas ponownego wystawienia certyfikatu generowany jest również nowy private key.
+
+Od cert-manager 1.18 domyślne zachowanie zmieniło się z Never na Always.
+
+Jest to szczególnie istotne dla Apigee Hybrid 1.16. Google ostrzega, że w instalacjach aktualizowanych ze starszych wersji niekontrolowana rotacja private key certyfikatu apigee-ca może spowodować problemy z ruchem.
+
+Dlatego przed aktualizacją cert-manager do wersji 1.18/1.19 Google wymaga sprawdzenia apigee-ca i ustawienia:
+
+privateKey:
+  rotationPolicy: Never
+
+jeżeli parametr nie jest ustawiony lub ma wartość Always.
+
+W świeżej instalacji Apigee Hybrid 1.16 problem ten nie powinien występować, ponieważ właściwa konfiguracja jest tworzona podczas instalacji.
+
+
+2.6. Kontrola procesu EAST-WEST
+
+Przykładowe polecenia OpenShift:
+
+oc get certificate -A
+
+oc get certificaterequest -A
+
+oc get certificate apigee-ca -n cert-manager -o yaml
+
+W szczególności dla apigee-ca należy zweryfikować:
+
+spec:
+  privateKey:
+    rotationPolicy: Never
+
+Można również sprawdzić informacje o ważności i planowanym odnowieniu:
+
+oc describe certificate apigee-ca -n cert-manager
+
+Należy monitorować status Certificate oraz zdarzenia cert-managera, aby wykryć błędy wystawiania przed wygaśnięciem certyfikatu.
+
+
+3. Certyfikaty NORTH-SOUTH – Apigee Ingress
+--------------------------------------------
+
+3.1. Przeznaczenie
+
+Certyfikat NORTH-SOUTH zabezpiecza ruch HTTPS przychodzący od klientów do Apigee.
+
+Client
+   |
+   | HTTPS
+   v
+Load Balancer / OpenShift
+   |
+   v
+Apigee Ingress Gateway
+   |
+   | TLS termination
+   v
+Apigee Runtime
+
+Certyfikat musi odpowiadać hostom skonfigurowanym dla odpowiedniego environment group / virtual host.
+
+
+3.2. Wystawienie certyfikatu
+
+Apigee Hybrid nie narzuca sposobu wystawienia certyfikatu ingressowego.
+
+Google wymaga dostarczenia certyfikatu i klucza dla runtime ingress gateway. Dla środowiska produkcyjnego powinien być używany certyfikat podpisany przez właściwe CA.
+
+W naszym procesie certyfikat NORTH-SOUTH jest uzyskiwany poprzez oddzielny proces/wniosek o certyfikat.
+
+Ogólny przepływ:
+
+wniosek o certyfikat
+        |
+        v
+organizacyjne / zewnętrzne CA
+        |
+        v
+wystawienie certyfikatu
+        |
+        +-- certificate / certificate chain
+        +-- private key
+        |
+        v
+Kubernetes Secret
+        |
+        v
+Apigee VirtualHost
+        |
+        v
+Apigee Ingress Gateway
+
+
+3.3. Dostarczenie certyfikatu do Apigee
+
+Apigee Hybrid 1.16 umożliwia dostarczenie certyfikatu jako:
+
+1. pary plików certyfikat + private key,
+2. Kubernetes Secret.
+
+Dla Kubernetes Secret dokumentacja Google pokazuje przykładowo:
+
+kubectl create -n <APIGEE_NAMESPACE> secret generic <SECRET_NAME> \
+  --from-file=key=<KEY_FILE> \
+  --from-file=cert=<CERT_FILE>
+
+Następnie Secret jest wskazywany w konfiguracji virtualhost:
+
+virtualhosts:
+  - name: <ENVIRONMENT_GROUP_NAME>
+    tlsMode: SIMPLE
+    sslSecret: <SECRET_NAME>
+
+W efekcie Apigee Ingress Gateway używa wskazanego certyfikatu do terminacji połączeń HTTPS.
+
+
+3.4. Rotacja / odnowienie certyfikatu ingress
+
+Ten proces jest niezależny od procesu certyfikatów EAST-WEST.
+
+Jeżeli certyfikat ingress nie jest zarządzany przez cert-manager, Apigee samo nie wystawi kolejnego certyfikatu z zewnętrznego CA. Przed wygaśnięciem należy przeprowadzić proces odnowienia w systemie/CA odpowiedzialnym za wystawianie certyfikatu.
+
+Proces:
+
+monitorowanie daty ważności
+        |
+        v
+zbliżające się wygaśnięcie
+        |
+        v
+wniosek o odnowienie / nowy certyfikat
+        |
+        v
+CA wystawia nowy certyfikat
+        |
+        v
+weryfikacja certyfikatu
+        |
+        v
+aktualizacja Kubernetes Secret
+        |
+        v
+Ingress Gateway otrzymuje nowy certyfikat
+        |
+        v
+weryfikacja HTTPS
+
+UWAGA:
+Dokładny sposób przeładowania certyfikatu przez działający ingress oraz wymaganie ewentualnego rollout/restartu powinny zostać potwierdzone na używanej wersji Apigee Hybrid/ingress i w testach środowiskowych. Nie należy zakładać restartu bez weryfikacji.
+
+
+3.5. Weryfikacja nowego certyfikatu przed wdrożeniem
+
+Przed aktualizacją Secret należy sprawdzić co najmniej:
+
+- datę rozpoczęcia i zakończenia ważności,
+- Subject / SAN,
+- zgodność SAN z hostami Apigee,
+- Issuer,
+- kompletność certificate chain,
+- zgodność certyfikatu z private key.
+
+Przykładowo:
+
+openssl x509 -in certificate.crt -noout -subject -issuer -dates -ext subjectAltName
+
+Po wdrożeniu należy zweryfikować certyfikat rzeczywiście prezentowany przez endpoint:
+
+openssl s_client -connect <HOST>:443 -servername <HOST> -showcerts
+
+oraz wykonać test funkcjonalny HTTPS/API.
+
+
+3.6. Zalecenia operacyjne dla rotacji NORTH-SOUTH
+
+Rotacja powinna zostać rozpoczęta z odpowiednim wyprzedzeniem przed datą wygaśnięcia.
+
+Zalecany przebieg:
+
+1. Sprawdzić termin ważności aktualnego certyfikatu.
+2. Złożyć wniosek o odnowienie/wystawienie nowego certyfikatu.
+3. Zweryfikować nowy certyfikat, SAN i certificate chain.
+4. Zweryfikować zgodność certyfikatu z private key.
+5. Wykonać backup/eksport informacji o aktualnym Secret zgodnie z procedurami bezpieczeństwa organizacji.
+6. Zaktualizować Secret wykorzystywany przez virtualhost.
+7. Zweryfikować propagację nowego certyfikatu do ingress gateway.
+8. Sprawdzić certyfikat prezentowany przez endpoint z zewnątrz.
+9. Wykonać test API.
+10. W przypadku problemu wykonać rollback do poprzedniego certyfikatu zgodnie z procedurą operacyjną.
+
+
+4. Podsumowanie odpowiedzialności
+---------------------------------
+
+EAST-WEST
+
+Przeznaczenie:
+Komunikacja wewnętrzna komponentów Apigee.
+
+Mechanizm:
+cert-manager / Certificate / Issuer / Kubernetes Secret.
+
+Wystawienie:
+Obsługiwane przez cert-manager zgodnie z konfiguracją Apigee.
+
+Odnowienie:
+Automatyczne dla zarządzanych Certificate.
+
+Klucz prywatny:
+Szczególna uwaga na apigee-ca. Dla opisanego scenariusza Apigee Hybrid 1.16 rotationPolicy powinno być Never.
+
+Odpowiedzialność operacyjna:
+Monitorowanie poprawności cert-managera, Certificate/CertificateRequest oraz terminów ważności.
+
+
+NORTH-SOUTH
+
+Przeznaczenie:
+HTTPS Client -> Apigee Ingress Gateway.
+
+Mechanizm:
+Certyfikat i private key dostarczone do Apigee, np. poprzez Kubernetes Secret wskazany przez sslSecret.
+
+Wystawienie:
+Poza Apigee, zgodnie z procesem organizacji/CA.
+
+Odnowienie:
+Oddzielny proces. Jeżeli certyfikat nie jest zarządzany przez cert-manager, wymaga uzyskania nowego certyfikatu i aktualizacji Secret.
+
+Odpowiedzialność operacyjna:
+Monitorowanie expiry, odnowienie certyfikatu, aktualizacja Secret oraz test endpointu po rotacji.
+
+
+5. Elementy wymagające potwierdzenia w środowisku
+-------------------------------------------------
+
+Przed uznaniem dokumentu za finalną procedurę operacyjną należy potwierdzić:
+
+1. Aktualną wersję cert-manager.
+2. Wartość rotationPolicy dla apigee-ca.
+3. Nazwy Certificate/Secret wykorzystywanych przez Apigee.
+4. Nazwę Secret wykorzystywanego przez NORTH-SOUTH ingress.
+5. Rzeczywisty proces organizacyjny wystawiania certyfikatu NORTH-SOUTH.
+6. Kto jest właścicielem procesu odnowienia certyfikatu NORTH-SOUTH.
+7. Jak wcześnie przed expiry rozpoczynany jest wniosek.
+8. Czy aktualizacja Secret ingress jest wykonywana ręcznie czy przez pipeline/GitOps.
+9. Czy ingress gateway przeładowuje nowy certyfikat automatycznie, czy wymagany jest kontrolowany rollout – do potwierdzenia testem na środowisku.
+10. Procedurę rollbacku w przypadku niepoprawnego certyfikatu.
+
+
+6. Źródła
+---------
+
+- Google Cloud – Apigee Hybrid 1.16: Configuring TLS and mTLS on the ingress gateway
+  https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/ingress-tls
+
+- Google Cloud – Apigee Hybrid 1.16: Create TLS certificates
+  https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/install-create-tls-certificates
+
+- Google Cloud – Apigee Hybrid 1.16: Configure virtual hosts
+  https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/base-path-routing
+
+- Google Cloud – Apigee Hybrid 1.16: Upgrade (cert-manager / apigee-ca rotationPolicy)
+  https://docs.cloud.google.com/apigee/docs/hybrid/v1.16/upgrade
+
+- cert-manager documentation – Certificate resource
+  https://cert-manager.io/docs/usage/certificate/
+
+UWAGA:
+Strona Google „Root CA rotation” dla Apigee nie opisuje procedury dla Apigee Hybrid, dlatego nie została potraktowana jako procedura rotacji CA dla tego środowiska.
