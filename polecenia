@@ -1,0 +1,1 @@
+- curl --silent --show-error --output /dev/null --write-out "OAuth HTTP status=%{http_code}\n" --connect-timeout 10 https://oauth2.googleapis.com/token
