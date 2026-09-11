@@ -1,5 +1,12 @@
-- curl --silent --show-error --output /dev/null --write-out "OAuth HTTP status=%{http_code}\n" --connect-timeout 10 https://oauth2.googleapis.com/token
-  - curl -sS -o /dev/null -w "Google APIs HTTP=%{http_code}\n" --connect-timeout 10 https://www.googleapis.com/discovery/v1/apis
-  - curl -sS -o /dev/null -w "GCP Resource Manager HTTP=%{http_code}\n" --connect-timeout 10 https://cloudresourcemanager.googleapis.com/
-  - curl -sS -o /dev/null -w "Apigee HTTP=%{http_code}\n" --connect-timeout 10 https://apigee.googleapis.com/
-  - curl -sS -o /dev/null -w "OAuth HTTP=%{http_code}\n" --connect-timeout 10 https://oauth2.googleapis.com/token
+.terraform_base:
+  before_script:
+    - |
+      if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+        echo "GOOGLE_APPLICATION_CREDENTIALS is not set"
+        exit 1
+      fi
+      if [ ! -s "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+        echo "Google credentials file is missing or empty"
+        exit 1
+      fi
+      echo "Google credentials file is available"
