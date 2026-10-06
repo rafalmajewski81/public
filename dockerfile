@@ -5,10 +5,14 @@ RUN microdnf install -y \
         openssh-clients \
         shadow-utils \
     && microdnf clean all \
-    && useradd --uid 1001 --home-dir /home/sshuser --shell /bin/sh --no-create-home sshuser \
+    && useradd --uid 1001 \
+        --home-dir /home/sshuser \
+        --shell /bin/sh \
+        --no-create-home \
+        sshuser \
     && mkdir -p /opt/sshd /tmp/sshd /home/sshuser \
-    && chown 1001:1001 /home/sshuser \
-    && chmod 0777 /tmp/sshd /home/sshuser
+    && chown 1001:1001 /tmp/sshd /home/sshuser \
+    && chmod 0700 /tmp/sshd /home/sshuser
 
 COPY sshd_config /opt/sshd/sshd_config
 COPY entrypoint.sh /opt/sshd/entrypoint.sh
